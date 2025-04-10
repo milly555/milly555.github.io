@@ -1,0 +1,170 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>自製複習字卡</title>
+  <link rel="manifest" href="manifest.json" />
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js");
+    }
+  </script>
+  <style>
+    body { font-family: Arial; text-align: center; padding: 20px; margin: 0; }
+    #card { border: 2px solid #333; padding: 20px; max-width: 300px; margin: 20px auto; font-size: 24px; }
+    .small { font-size: 18px; margin-top: 10px; }
+    button { margin: 5px; font-size: 18px; padding: 8px 16px; }
+    input { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>自製複習字卡</h2>
+  <input type="file" id="fileInput" accept=".xlsx" />
+  <div id="card" style="display:none;">
+    <div id="word">點擊開始</div>
+    <div id="extraInfo" class="small" style="display: none;"></div>
+    <div id="reviewButtons" style="display: none; margin-top: 20px;">
+      <button onclick="rateWord('熟透')">非常熟</button>
+      <button onclick="rateWord('熟了')">熟了</button>
+      <button onclick="rateWord('不熟')">不熟</button>
+    </div>
+  </div>
+  <br />
+  <button onclick="downloadExcel()" style="display:none;" id="downloadBtn">下載進度 Excel</button>
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <script>
+    let allCards = [];
+    let dueCards = [];
+    let shownCards = [];
+    let currentCard = null;
+    let isTranslationShown = false;
+
+    function todayStr() {
+      return new Date().toISOString().split("T")[0];
+    }
+
+    function addDays(dateStr, days) {
+      const d = new Date(dateStr);
+      d.setDate(d.getDate() + days);
+      return d.toISOString().split("T")[0];
+    }
+
+    function loadExcel(data) {
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+      allCards = rows.map(row => {
+        const front = row[0]?.toString().trim();
+        const back1 = row[1]?.toString().trim() || "";
+        const back2 = row[2]?.toString().trim() || "";
+        const key = "card_" + front;
+        const saved = JSON.parse(localStorage.getItem(key) || '{}');
+        return {
+          front,
+          back: [back1, back2].filter(Boolean).join(" "),
+          nextReview: saved.nextReview || todayStr(),
+          familiarCount: saved.familiarCount || 0
+        };
+      }).filter(c => c.front && c.back);
+
+      dueCards = allCards.filter(card => card.nextReview <= todayStr());
+      shownCards = [];
+    }
+
+    document.getElementById("fileInput").addEventListener("change", function (e) {
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        loadExcel(e.target.result);
+
+        if (dueCards.length === 0) {
+          alert("今天沒有需要複習的單字！");
+          return;
+        }
+
+        document.getElementById("card").style.display = "block";
+        document.getElementById("downloadBtn").style.display = "inline-block";
+        nextCard();
+      };
+      reader.readAsArrayBuffer(e.target.files[0]);
+    });
+
+    function nextCard() {
+      isTranslationShown = false;
+      document.getElementById("extraInfo").style.display = "none";
+      document.getElementById("reviewButtons").style.display = "none";
+
+      if (dueCards.length === 0 && shownCards.length > 0) {
+        dueCards = shownCards.slice();
+        shownCards = [];
+      }
+
+      if (dueCards.length === 0) {
+        alert("今天的複習完成了！");
+        return;
+      }
+
+      const index = Math.floor(Math.random() * dueCards.length);
+      currentCard = dueCards.splice(index, 1)[0];
+      document.getElementById("word").innerText = currentCard.front;
+    }
+
+    document.getElementById("card").addEventListener("click", function () {
+      if (!isTranslationShown && currentCard) {
+        document.getElementById("extraInfo").innerText = currentCard.back;
+        document.getElementById("extraInfo").style.display = "block";
+        document.getElementById("reviewButtons").style.display = "block";
+        isTranslationShown = true;
+      }
+    });
+
+    function rateWord(level) {
+      if (!currentCard) return;
+
+      const key = "card_" + currentCard.front;
+      let saved = JSON.parse(localStorage.getItem(key) || '{}');
+      let nextReview = todayStr();
+
+      if (level === "熟透") {
+        saved.familiarCount = (saved.familiarCount || 0) + 1;
+        nextReview = addDays(todayStr(), saved.familiarCount === 1 ? 3 : 5);
+        currentCard.nextReview = nextReview;
+        localStorage.setItem(key, JSON.stringify({
+          nextReview,
+          familiarCount: saved.familiarCount
+        }));
+        shownCards.push(currentCard);
+      }
+
+      if (level === "熟了") {
+        nextReview = addDays(todayStr(), 1);
+        currentCard.nextReview = nextReview;
+        localStorage.setItem(key, JSON.stringify({
+          nextReview,
+          familiarCount: saved.familiarCount || 0
+        }));
+      }
+
+      if (level === "不熟") {
+        shownCards.push(currentCard);
+      }
+
+      isTranslationShown = false;
+      document.getElementById("extraInfo").style.display = "none";
+      document.getElementById("reviewButtons").style.display = "none";
+      setTimeout(() => { nextCard(); }, 100);
+    }
+
+    function downloadExcel() {
+      const data = allCards.map(card => [card.front, card.back, card.nextReview]);
+      data.sort((a, b) => a[0].localeCompare(b[0]));
+      const worksheet = XLSX.utils.aoa_to_sheet([["正面", "背面", "下次複習日"], ...data]);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "複習進度");
+      XLSX.writeFile(workbook, "字卡進度.xlsx");
+    }
+  </script>
+</body>
+</html>
